@@ -56,12 +56,15 @@ func fatal(err error) {
 
 // setupSpec performs initial setup based on the cli.Context for the container
 func setupSpec(context *cli.Context) (*specs.Spec, error) {
+	// 读取bundle参数
 	bundle := context.String("bundle")
 	if bundle != "" {
+		// 改变工作目录
 		if err := os.Chdir(bundle); err != nil {
 			return nil, err
 		}
 	}
+	// 加载"config.json"文件，即加载配置
 	spec, err := loadSpec(specConfig)
 	if err != nil {
 		return nil, err

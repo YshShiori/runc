@@ -36,6 +36,8 @@ func loadFactory(context *cli.Context) (libcontainer.Factory, error) {
 		return nil, err
 	}
 
+	// 决定cgroup 管理结构，可能是：默认cgroupfs, rootless cgroupfs, systemd cgroupfs
+
 	// We default to cgroupfs, and can only use systemd if the system is a
 	// systemd box.
 	cgroupManager := libcontainer.Cgroupfs
@@ -54,11 +56,13 @@ func loadFactory(context *cli.Context) (libcontainer.Factory, error) {
 		}
 	}
 
+	// 允许情况下，使用intel RDT技术
 	intelRdtManager := libcontainer.IntelRdtFs
 	if !intelrdt.IsCatEnabled() && !intelrdt.IsMbaEnabled() {
 		intelRdtManager = nil
 	}
 
+	// 查找命令"newuidmap"，"newgidmap"的可执行文件路径
 	// We resolve the paths for {newuidmap,newgidmap} from the context of runc,
 	// to avoid doing a path lookup in the nsexec context. TODO: The binary
 	// names are not currently configurable.
@@ -71,6 +75,7 @@ func loadFactory(context *cli.Context) (libcontainer.Factory, error) {
 		newgidmap = ""
 	}
 
+	// 创建Factory
 	return libcontainer.New(abs, cgroupManager, intelRdtManager,
 		libcontainer.CriuPath(context.GlobalString("criu")),
 		libcontainer.NewuidmapPath(newuidmap),
@@ -227,11 +232,15 @@ func createPidFile(path string, process *libcontainer.Process) error {
 	return os.Rename(tmpName, path)
 }
 
+// createContainer 按照Spec结构创建容器
 func createContainer(context *cli.Context, id string, spec *specs.Spec) (libcontainer.Container, error) {
+	// 判断是否是有rootless cgroup manager, 这样就不需要root权限来创建容器
 	rootlessCg, err := shouldUseRootlessCgroupManager(context)
 	if err != nil {
 		return nil, err
 	}
+
+	// 创建libcontainer的协议结构，可以看到传入的是CreateOpts
 	config, err := specconv.CreateLibcontainerConfig(&specconv.CreateOpts{
 		CgroupName:       id,
 		UseSystemdCgroup: context.GlobalBool("systemd-cgroup"),
@@ -245,10 +254,13 @@ func createContainer(context *cli.Context, id string, spec *specs.Spec) (libcont
 		return nil, err
 	}
 
+	// 得到指定的factory
 	factory, err := loadFactory(context)
 	if err != nil {
 		return nil, err
 	}
+
+	// 执行factory Create接口，创建容器
 	return factory.Create(id, config)
 }
 
@@ -275,17 +287,25 @@ func (r *runner) run(config *specs.Process) (int, error) {
 			r.destroy()
 		}
 	}()
+
+	// 检查终端相关参数
 	if err = r.checkTerminal(config); err != nil {
 		return -1, err
 	}
+
+	// 通过config创建libcontainer.Process结构(init表明是init process)
 	process, err := newProcess(*config, r.init, r.logLevel)
 	if err != nil {
 		return -1, err
 	}
+
+	// 配置process参数，加入需要传递的fd, 以及fd的数量的环境变量
 	if len(r.listenFDs) > 0 {
 		process.Env = append(process.Env, fmt.Sprintf("LISTEN_FDS=%d", len(r.listenFDs)), "LISTEN_PID=1")
 		process.ExtraFiles = append(process.ExtraFiles, r.listenFDs...)
 	}
+
+	// 加入当前进程下的其他fd
 	baseFd := 3 + len(process.ExtraFiles)
 	for i := baseFd; i < baseFd+r.preserveFDs; i++ {
 		_, err = os.Stat(fmt.Sprintf("/proc/self/fd/%d", i))
@@ -294,6 +314,8 @@ func (r *runner) run(config *specs.Process) (int, error) {
 		}
 		process.ExtraFiles = append(process.ExtraFiles, os.NewFile(uintptr(i), "PreserveFD:"+strconv.Itoa(i)))
 	}
+
+	// 通过Container的config得到rootuid与rootgid
 	rootuid, err := r.container.Config().HostRootUID()
 	if err != nil {
 		return -1, err
@@ -365,6 +387,7 @@ func (r *runner) terminate(p *libcontainer.Process) {
 }
 
 func (r *runner) checkTerminal(config *specs.Process) error {
+	// 在非detach模式下, 检查Terminal对应的参数
 	detach := r.detach || (r.action == CT_ACT_CREATE)
 	// Check command-line for sanity.
 	if detach && config.Terminal && r.consoleSocket == "" {
@@ -401,28 +424,34 @@ const (
 )
 
 func startContainer(context *cli.Context, spec *specs.Spec, action CtAct, criuOpts *libcontainer.CriuOpts) (int, error) {
+	// 读取命令行第一个arg，即id
 	id := context.Args().First()
 	if id == "" {
 		return -1, errEmptyID
 	}
 
+	// 在指定"NOTIFY_SOCKET"环境变量下，得到notifysocket相关参数
 	notifySocket := newNotifySocket(context, os.Getenv("NOTIFY_SOCKET"), id)
 	if notifySocket != nil {
+		// 在spec参数中加入notify_sock文件的挂载, 以及NOTIFY_SOCKET环境变量
 		notifySocket.setupSpec(context, spec)
 	}
 
+	// 调用createContainer创建容器
 	container, err := createContainer(context, id, spec)
 	if err != nil {
 		return -1, err
 	}
 
 	if notifySocket != nil {
+		// 准备notify sock文件
 		err := notifySocket.setupSocket()
 		if err != nil {
 			return -1, err
 		}
 	}
 
+	// 需要向容器内传递的fd
 	// Support on-demand socket activation by passing file descriptors into the container init process.
 	listenFDs := []*os.File{}
 	if os.Getenv("LISTEN_FDS") != "" {
@@ -434,6 +463,7 @@ func startContainer(context *cli.Context, spec *specs.Spec, action CtAct, criuOp
 		logLevel = "debug"
 	}
 
+	// 构造runner结构
 	r := &runner{
 		enableSubreaper: !context.Bool("no-subreaper"),
 		shouldDestroy:   true,
@@ -449,5 +479,7 @@ func startContainer(context *cli.Context, spec *specs.Spec, action CtAct, criuOp
 		init:            true,
 		logLevel:        logLevel,
 	}
+
+	// 通过runner.run启动init Process
 	return r.run(spec.Process)
 }
