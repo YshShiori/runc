@@ -78,9 +78,11 @@ created by an unprivileged user.
 		},
 	},
 	Action: func(context *cli.Context) error {
+		// 检查参数
 		if err := checkArgs(context, 0, exactArgs); err != nil {
 			return err
 		}
+		// 得到spec的模板, rootless有独特的spec
 		spec := specconv.Example()
 
 		rootless := context.Bool("rootless")
@@ -98,15 +100,18 @@ created by an unprivileged user.
 			}
 			return nil
 		}
+		// 将工作目录变为到"bundle"
 		bundle := context.String("bundle")
 		if bundle != "" {
 			if err := os.Chdir(bundle); err != nil {
 				return err
 			}
 		}
+		// 检查"config.json"文件是否存在
 		if err := checkNoFile(specConfig); err != nil {
 			return err
 		}
+		// 将spec内容写入"config.json"文件
 		data, err := json.MarshalIndent(spec, "", "\t")
 		if err != nil {
 			return err

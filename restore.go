@@ -93,6 +93,7 @@ using the runc checkpoint command.`,
 		},
 	},
 	Action: func(context *cli.Context) error {
+		// 检查参数
 		if err := checkArgs(context, 1, exactArgs); err != nil {
 			return err
 		}
@@ -101,6 +102,7 @@ using the runc checkpoint command.`,
 			logrus.Warn("runc checkpoint is untested with rootless containers")
 		}
 
+		// 得到容器的启动配置
 		spec, err := setupSpec(context)
 		if err != nil {
 			return err
@@ -109,6 +111,7 @@ using the runc checkpoint command.`,
 		if err := setEmptyNsMask(context, options); err != nil {
 			return err
 		}
+		// 启动容器, 注意action是CT_ACT_RESTORE
 		status, err := startContainer(context, spec, CT_ACT_RESTORE, options)
 		if err != nil {
 			return err

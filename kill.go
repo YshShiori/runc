@@ -31,17 +31,20 @@ signal to the init process of the "ubuntu01" container:
 		},
 	},
 	Action: func(context *cli.Context) error {
+		// 检查参数
 		if err := checkArgs(context, 1, minArgs); err != nil {
 			return err
 		}
 		if err := checkArgs(context, 2, maxArgs); err != nil {
 			return err
 		}
+		// 查询Container
 		container, err := getContainer(context)
 		if err != nil {
 			return err
 		}
 
+		// 得到发送的信号, 默认为SIGTERM
 		sigstr := context.Args().Get(1)
 		if sigstr == "" {
 			sigstr = "SIGTERM"
@@ -51,6 +54,7 @@ signal to the init process of the "ubuntu01" container:
 		if err != nil {
 			return err
 		}
+		// 调用容器Signal接口发送信号, all表示对所有process发送
 		return container.Signal(signal, context.Bool("all"))
 	},
 }

@@ -147,14 +147,17 @@ information is displayed once every 5 seconds.`,
 		if err := checkArgs(context, 1, exactArgs); err != nil {
 			return err
 		}
+		// 查询容器
 		container, err := getContainer(context)
 		if err != nil {
 			return err
 		}
+		// 确认通知间隔
 		duration := context.Duration("interval")
 		if duration <= 0 {
 			return fmt.Errorf("duration interval must be greater than 0")
 		}
+		// stopped container无法执行
 		status, err := container.Status()
 		if err != nil {
 			return err
@@ -163,13 +166,16 @@ information is displayed once every 5 seconds.`,
 			return fmt.Errorf("container with id %s is not running", container.ID())
 		}
 		var (
+			// 构造通知的channel
 			stats  = make(chan *libcontainer.Stats, 1)
 			events = make(chan *event, 1024)
 			group  = &sync.WaitGroup{}
 		)
 		group.Add(1)
+		// 永久解析event channel的goroutine, 直到events关闭
 		go func() {
 			defer group.Done()
+			// 这个通过一个Encoder将结果输出到os.Stdout
 			enc := json.NewEncoder(os.Stdout)
 			for e := range events {
 				if err := enc.Encode(e); err != nil {
@@ -177,6 +183,8 @@ information is displayed once every 5 seconds.`,
 				}
 			}
 		}()
+
+		// 如果event制定stats, 只调用一次container.Stats, 将结果发送到events
 		if context.Bool("stats") {
 			s, err := container.Stats()
 			if err != nil {
@@ -187,6 +195,7 @@ information is displayed once every 5 seconds.`,
 			group.Wait()
 			return nil
 		}
+		// 新的goroutinue, 周期性执行Stats, 结果发送到stats
 		go func() {
 			for range time.Tick(context.Duration("interval")) {
 				s, err := container.Stats()
@@ -197,10 +206,14 @@ information is displayed once every 5 seconds.`,
 				stats <- s
 			}
 		}()
+		// 得到OOM事件通知的channel
 		n, err := container.NotifyOOM()
 		if err != nil {
 			return err
 		}
+
+		// 监听OOM事件channel与stats的channel
+		// 将数据转发到events中
 		for {
 			select {
 			case _, ok := <-n:
@@ -216,6 +229,8 @@ information is displayed once every 5 seconds.`,
 				events <- &event{Type: "stats", ID: container.ID(), Data: convertLibcontainerStats(s)}
 			}
 			if n == nil {
+				// 永久循环直到OOM channel关闭（容器退出）
+				// 还有情况就是当前这个程序退出
 				close(events)
 				break
 			}

@@ -124,14 +124,17 @@ other options are ignored.
 		},
 	},
 	Action: func(context *cli.Context) error {
+		// 检查参数
 		if err := checkArgs(context, 1, exactArgs); err != nil {
 			return err
 		}
+		// 查询Container
 		container, err := getContainer(context)
 		if err != nil {
 			return err
 		}
 
+		// 构造参数
 		r := specs.LinuxResources{
 			Memory: &specs.LinuxMemory{
 				Limit:       i64Ptr(0),
@@ -157,9 +160,11 @@ other options are ignored.
 			},
 		}
 
+		// 得到容器当前的配置
 		config := container.Config()
 
 		if in := context.String("resources"); in != "" {
+			// 读取“resource”指定的配置文件
 			var (
 				f   *os.File
 				err error
@@ -178,6 +183,7 @@ other options are ignored.
 				return err
 			}
 		} else {
+			// 未指定"resource", 从命令行参数读取
 			if val := context.Int("blkio-weight"); val != 0 {
 				r.BlockIO.Weight = u16Ptr(uint16(val))
 			}
@@ -248,6 +254,7 @@ other options are ignored.
 			r.Pids.Limit = int64(context.Int("pids-limit"))
 		}
 
+		// 更新容器配置, 其他的还是保留当前容器
 		// Update the value
 		config.Cgroups.Resources.BlkioWeight = *r.BlockIO.Weight
 		config.Cgroups.Resources.CpuPeriod = *r.CPU.Period
@@ -299,6 +306,7 @@ other options are ignored.
 			config.IntelRdt.MemBwSchema = memBwSchema
 		}
 
+		// 调用set接口更新容器的配置
 		return container.Set(config)
 	},
 }

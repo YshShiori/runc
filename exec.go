@@ -95,12 +95,15 @@ following will output a list of processes running in the container:
 		},
 	},
 	Action: func(context *cli.Context) error {
+		// 检查参数
 		if err := checkArgs(context, 1, minArgs); err != nil {
 			return err
 		}
+		// 设置容器对应的"pid_file", 如果设置了"pid_file"参数
 		if err := revisePidFile(context); err != nil {
 			return err
 		}
+		// 创建新的process
 		status, err := execProcess(context)
 		if err == nil {
 			os.Exit(status)
@@ -111,10 +114,12 @@ following will output a list of processes running in the container:
 }
 
 func execProcess(context *cli.Context) (int, error) {
+	// 查询容器
 	container, err := getContainer(context)
 	if err != nil {
 		return -1, err
 	}
+	// 确认容器状态
 	status, err := container.Status()
 	if err != nil {
 		return -1, err
@@ -122,15 +127,18 @@ func execProcess(context *cli.Context) (int, error) {
 	if status == libcontainer.Stopped {
 		return -1, fmt.Errorf("cannot exec a container that has stopped")
 	}
+	// 得到要执行的process的配置文件路径
 	path := context.String("process")
 	if path == "" && len(context.Args()) == 1 {
 		return -1, fmt.Errorf("process args cannot be empty")
 	}
 	detach := context.Bool("detach")
+	// 通过State查找容器对应的bundle
 	state, err := container.State()
 	if err != nil {
 		return -1, err
 	}
+
 	bundle := utils.SearchLabels(state.Config.Labels, "bundle")
 	p, err := getProcess(context, bundle)
 	if err != nil {
@@ -142,6 +150,7 @@ func execProcess(context *cli.Context) (int, error) {
 		logLevel = "debug"
 	}
 
+	// 构建runner
 	r := &runner{
 		enableSubreaper: false,
 		shouldDestroy:   false,
@@ -154,11 +163,13 @@ func execProcess(context *cli.Context) (int, error) {
 		preserveFDs:     context.Int("preserve-fds"),
 		logLevel:        logLevel,
 	}
+	// 执行runner.run
 	return r.run(p)
 }
 
 func getProcess(context *cli.Context, bundle string) (*specs.Process, error) {
 	if path := context.String("process"); path != "" {
+		// 启动文件制定运行参数
 		f, err := os.Open(path)
 		if err != nil {
 			return nil, err
@@ -170,6 +181,7 @@ func getProcess(context *cli.Context, bundle string) (*specs.Process, error) {
 		}
 		return &p, validateProcessSpec(&p)
 	}
+	// 命令行制定运行参数
 	// process via cli flags
 	if err := os.Chdir(bundle); err != nil {
 		return nil, err
@@ -179,7 +191,10 @@ func getProcess(context *cli.Context, bundle string) (*specs.Process, error) {
 		return nil, err
 	}
 	p := spec.Process
+	// 运行的命令
 	p.Args = context.Args()[1:]
+
+	// 运行的其他参数
 	// override the cwd, if passed
 	if context.String("cwd") != "" {
 		p.Cwd = context.String("cwd")
