@@ -130,11 +130,14 @@ func CriuPath(criupath string) func(*LinuxFactory) error {
 // New returns a linux based container factory based in the root directory and
 // configures the factory with the provided option funcs.
 func New(root string, options ...func(*LinuxFactory) error) (Factory, error) {
+	// 创建root目录
 	if root != "" {
 		if err := os.MkdirAll(root, 0700); err != nil {
 			return nil, newGenericError(err, SystemError)
 		}
 	}
+	// 构造LinuxFactory对象
+	// 看到InitPath默认为/proc/self/exe, InitArgs默认为当前进程(runc) init
 	l := &LinuxFactory{
 		Root:      root,
 		InitPath:  "/proc/self/exe",
@@ -142,7 +145,10 @@ func New(root string, options ...func(*LinuxFactory) error) (Factory, error) {
 		Validator: validate.New(),
 		CriuPath:  "criu",
 	}
+	// 设置默认的[NewCgroupManager]
 	Cgroupfs(l)
+	// 使用option函数改变l
+	// 目前的支持选项: Cgroupfs RootlessCgroupfs SystemdCgroups TmpfsRoot IntelRdtFs
 	for _, opt := range options {
 		if opt == nil {
 			continue
@@ -151,6 +157,7 @@ func New(root string, options ...func(*LinuxFactory) error) (Factory, error) {
 			return nil, err
 		}
 	}
+	// 返回LinuxFactory
 	return l, nil
 }
 
@@ -190,12 +197,15 @@ func (l *LinuxFactory) Create(id string, config *configs.Config) (Container, err
 	if l.Root == "" {
 		return nil, newGenericError(fmt.Errorf("invalid root"), ConfigInvalid)
 	}
+	// 检查id
 	if err := l.validateID(id); err != nil {
 		return nil, err
 	}
+	// 检查config
 	if err := l.Validator.Validate(config); err != nil {
 		return nil, newGenericError(err, ConfigInvalid)
 	}
+	// 构造容器Root路径(<Root>/[id])
 	containerRoot, err := securejoin.SecureJoin(l.Root, id)
 	if err != nil {
 		return nil, err
@@ -211,6 +221,7 @@ func (l *LinuxFactory) Create(id string, config *configs.Config) (Container, err
 	if err := os.Chown(containerRoot, unix.Geteuid(), unix.Getegid()); err != nil {
 		return nil, newGenericError(err, SystemError)
 	}
+	// 构造linuxContainer结构
 	c := &linuxContainer{
 		id:            id,
 		root:          containerRoot,
@@ -222,9 +233,11 @@ func (l *LinuxFactory) Create(id string, config *configs.Config) (Container, err
 		newgidmapPath: l.NewgidmapPath,
 		cgroupManager: l.NewCgroupsManager(config.Cgroups, nil),
 	}
+	// 检查Container是否使用intelRdtManager
 	if intelrdt.IsCatEnabled() || intelrdt.IsMbaEnabled() {
 		c.intelRdtManager = l.NewIntelRdtManager(config, id, "")
 	}
+	// 设置container的状态为stopped（为啥不是created?）
 	c.state = &stoppedState{c: c}
 	return c, nil
 }
@@ -233,18 +246,22 @@ func (l *LinuxFactory) Load(id string) (Container, error) {
 	if l.Root == "" {
 		return nil, newGenericError(fmt.Errorf("invalid root"), ConfigInvalid)
 	}
+	// 检查id
 	//when load, we need to check id is valid or not.
 	if err := l.validateID(id); err != nil {
 		return nil, err
 	}
+	// 得到Container的Root目录
 	containerRoot, err := securejoin.SecureJoin(l.Root, id)
 	if err != nil {
 		return nil, err
 	}
+	// 加载State
 	state, err := l.loadState(containerRoot, id)
 	if err != nil {
 		return nil, err
 	}
+	// 构造linuxContainer结构返回
 	r := &nonChildProcess{
 		processPid:       state.InitProcessPid,
 		processStartTime: state.InitProcessStartTime,
@@ -264,10 +281,13 @@ func (l *LinuxFactory) Load(id string) (Container, error) {
 		root:                 containerRoot,
 		created:              state.Created,
 	}
+	// 加载state
+	// 一开始是loadedState(非正常流的state), 不过refreshState会刷新到正常的state
 	c.state = &loadedState{c: c}
 	if err := c.refreshState(); err != nil {
 		return nil, err
 	}
+	// 加载intel RDT相关参数
 	if intelrdt.IsCatEnabled() || intelrdt.IsMbaEnabled() {
 		c.intelRdtManager = l.NewIntelRdtManager(&state.Config, id, state.IntelRdtPath)
 	}
@@ -350,10 +370,12 @@ func (l *LinuxFactory) StartInitialization() (err error) {
 }
 
 func (l *LinuxFactory) loadState(root, id string) (*State, error) {
+	// 得到stat文件, 为"<ContainerRoot>/state.json"
 	stateFilePath, err := securejoin.SecureJoin(root, stateFilename)
 	if err != nil {
 		return nil, err
 	}
+	// 加载state文件，得到State结构
 	f, err := os.Open(stateFilePath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -366,6 +388,7 @@ func (l *LinuxFactory) loadState(root, id string) (*State, error) {
 	if err := json.NewDecoder(f).Decode(&state); err != nil {
 		return nil, newGenericError(err, SystemError)
 	}
+	// 返回state结构
 	return state, nil
 }
 
