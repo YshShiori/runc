@@ -18,9 +18,11 @@ paused. `,
 
 Use runc list to identify instances of containers and their current status.`,
 	Action: func(context *cli.Context) error {
+		// 检查参数
 		if err := checkArgs(context, 1, exactArgs); err != nil {
 			return err
 		}
+		// 判断是否是rootless的cgroup, rootless无法进行pause
 		rootlessCg, err := shouldUseRootlessCgroupManager(context)
 		if err != nil {
 			return err
@@ -28,10 +30,12 @@ Use runc list to identify instances of containers and their current status.`,
 		if rootlessCg {
 			logrus.Warnf("runc pause may fail if you don't have the full access to cgroups")
 		}
+		// 得到Container
 		container, err := getContainer(context)
 		if err != nil {
 			return err
 		}
+		// 调用Container.Pause停止
 		return container.Pause()
 	},
 }
@@ -47,9 +51,11 @@ resumed.`,
 
 Use runc list to identify instances of containers and their current status.`,
 	Action: func(context *cli.Context) error {
+		// 检查参数
 		if err := checkArgs(context, 1, exactArgs); err != nil {
 			return err
 		}
+		// 判断是否是rootless的cgroup, rootless无法进行resume
 		rootlessCg, err := shouldUseRootlessCgroupManager(context)
 		if err != nil {
 			return err
@@ -57,6 +63,7 @@ Use runc list to identify instances of containers and their current status.`,
 		if rootlessCg {
 			logrus.Warn("runc resume may fail if you don't have the full access to cgroups")
 		}
+		// 得到Container，并调用Resume
 		container, err := getContainer(context)
 		if err != nil {
 			return err

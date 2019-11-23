@@ -26,9 +26,11 @@ var psCommand = cli.Command{
 		},
 	},
 	Action: func(context *cli.Context) error {
+		// 检查参数
 		if err := checkArgs(context, 1, minArgs); err != nil {
 			return err
 		}
+		// rootless不允许执行ps
 		rootlessCg, err := shouldUseRootlessCgroupManager(context)
 		if err != nil {
 			return err
@@ -36,17 +38,18 @@ var psCommand = cli.Command{
 		if rootlessCg {
 			logrus.Warn("runc ps may fail if you don't have the full access to cgroups")
 		}
-
+		// 得到对应的Container
 		container, err := getContainer(context)
 		if err != nil {
 			return err
 		}
-
+		// 执行Container.Processes得到所有进场的pid
 		pids, err := container.Processes()
 		if err != nil {
 			return err
 		}
 
+		// 格式化输出
 		switch context.String("format") {
 		case "table":
 		case "json":
@@ -54,6 +57,9 @@ var psCommand = cli.Command{
 		default:
 			return fmt.Errorf("invalid format option")
 		}
+
+		// 对于table模式，会在本地执行一个ps -ef加上命令行参数
+		// 然后用上面的pids, 过滤其中的pid。
 
 		// [1:] is to remove command name, ex:
 		// context.Args(): [containet_id ps_arg1 ps_arg2 ...]

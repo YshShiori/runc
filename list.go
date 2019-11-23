@@ -74,11 +74,14 @@ To list containers created using a non-default value for "--root":
 		if err := checkArgs(context, 0, exactArgs); err != nil {
 			return err
 		}
+
+		// 得到所有Container的State
 		s, err := getContainers(context)
 		if err != nil {
 			return err
 		}
 
+		// quiet模式下只输出id
 		if context.Bool("quiet") {
 			for _, item := range s {
 				fmt.Println(item.ID)
@@ -86,6 +89,7 @@ To list containers created using a non-default value for "--root":
 			return nil
 		}
 
+		// 格式化输出
 		switch context.String("format") {
 		case "table":
 			w := tabwriter.NewWriter(os.Stdout, 12, 1, 3, ' ', 0)
@@ -114,10 +118,13 @@ To list containers created using a non-default value for "--root":
 }
 
 func getContainers(context *cli.Context) ([]containerState, error) {
+	// 得到Factory
 	factory, err := loadFactory(context)
 	if err != nil {
 		return nil, err
 	}
+
+	// 读取root目录下所有项
 	root := context.GlobalString("root")
 	absRoot, err := filepath.Abs(root)
 	if err != nil {
@@ -130,6 +137,8 @@ func getContainers(context *cli.Context) ([]containerState, error) {
 
 	var s []containerState
 	for _, item := range list {
+		// 对于root下所有的目录, 如果是一个目录, 那么
+		// 就是一个container
 		if item.IsDir() {
 			// This cast is safe on Linux.
 			stat := item.Sys().(*syscall.Stat_t)
@@ -138,6 +147,7 @@ func getContainers(context *cli.Context) ([]containerState, error) {
 				owner.Name = fmt.Sprintf("#%d", stat.Uid)
 			}
 
+			// 目录的名字就是container id
 			container, err := factory.Load(item.Name())
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "load container %s: %v\n", item.Name(), err)

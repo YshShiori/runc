@@ -63,16 +63,23 @@ command(s) that get executed on start, edit the args parameter of the spec. See
 		},
 	},
 	Action: func(context *cli.Context) error {
+		// 检查参数
 		if err := checkArgs(context, 1, exactArgs); err != nil {
 			return err
 		}
+
+		// 设置context中的"pid-file"参数
 		if err := revisePidFile(context); err != nil {
 			return err
 		}
+
+		// 得到spec配置
 		spec, err := setupSpec(context)
 		if err != nil {
 			return err
 		}
+
+		// 调用startContainer启动容器, 注意action是CT_ACT_RUN
 		status, err := startContainer(context, spec, CT_ACT_RUN, nil)
 		if err == nil {
 			// exit with the container's exit status so any external supervisor is

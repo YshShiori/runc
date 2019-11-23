@@ -19,6 +19,7 @@ func killContainer(container libcontainer.Container) error {
 	_ = container.Signal(unix.SIGKILL, false)
 	for i := 0; i < 100; i++ {
 		time.Sleep(100 * time.Millisecond)
+		// 等待停止(无法接受到信号0), 停止后执行container的destory
 		if err := container.Signal(syscall.Signal(0), false); err != nil {
 			destroy(container)
 			return nil
@@ -47,12 +48,16 @@ status of "ubuntu01" as "stopped" the following will delete resources held for
 		},
 	},
 	Action: func(context *cli.Context) error {
+		// 检查参数
 		if err := checkArgs(context, 1, exactArgs); err != nil {
 			return err
 		}
 
+		// 得到"id"与"force"参数
 		id := context.Args().First()
 		force := context.Bool("force")
+
+		// 查询Container
 		container, err := getContainer(context)
 		if err != nil {
 			if lerr, ok := err.(libcontainer.Error); ok && lerr.Code() == libcontainer.ContainerNotExists {
@@ -68,6 +73,8 @@ status of "ubuntu01" as "stopped" the following will delete resources held for
 			}
 			return err
 		}
+
+		// 得到Container的Status
 		s, err := container.Status()
 		if err != nil {
 			return err

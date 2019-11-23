@@ -89,10 +89,13 @@ func getContainer(context *cli.Context) (libcontainer.Container, error) {
 	if id == "" {
 		return nil, errEmptyID
 	}
+	// 得到factory
 	factory, err := loadFactory(context)
 	if err != nil {
 		return nil, err
 	}
+
+	// 通过factory得到Container
 	return factory.Load(id)
 }
 
@@ -327,6 +330,8 @@ func (r *runner) run(config *specs.Process) (int, error) {
 	var (
 		detach = r.detach || (r.action == CT_ACT_CREATE)
 	)
+
+	// 建立Process的IO
 	// Setting up IO is a two stage process. We need to modify process to deal
 	// with detaching containers, and then we get a tty after the container has
 	// started.
@@ -463,7 +468,7 @@ func startContainer(context *cli.Context, spec *specs.Spec, action CtAct, criuOp
 		logLevel = "debug"
 	}
 
-	// 构造runner结构
+	// 构造runner结构, action为Create, 所以是创建runner
 	r := &runner{
 		enableSubreaper: !context.Bool("no-subreaper"),
 		shouldDestroy:   true,
