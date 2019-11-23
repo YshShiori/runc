@@ -300,6 +300,7 @@ func (l *LinuxFactory) Type() string {
 
 // StartInitialization loads a container by opening the pipe fd from the parent to read the configuration and state
 // This is a low level implementation detail of the reexec and should not be consumed externally
+// 以下行为应该是在容器内执行的, 即执行runc init后流程到了容器内部
 func (l *LinuxFactory) StartInitialization() (err error) {
 	var (
 		pipefd, fifofd int
@@ -309,6 +310,7 @@ func (l *LinuxFactory) StartInitialization() (err error) {
 		envConsole     = os.Getenv("_LIBCONTAINER_CONSOLE")
 	)
 
+	// 得好通过环境变量传入的pipe的fd
 	// Get the INITPIPE.
 	pipefd, err = strconv.Atoi(envInitPipe)
 	if err != nil {
@@ -321,6 +323,7 @@ func (l *LinuxFactory) StartInitialization() (err error) {
 	)
 	defer pipe.Close()
 
+	// 如果是init process, 那么有FIFO的fd
 	// Only init processes have FIFOFD.
 	fifofd = -1
 	if it == initStandard {
@@ -329,6 +332,7 @@ func (l *LinuxFactory) StartInitialization() (err error) {
 		}
 	}
 
+	// 如果有对应的console socket的fd，那么打开
 	if envConsole != "" {
 		console, err := strconv.Atoi(envConsole)
 		if err != nil {
@@ -342,6 +346,8 @@ func (l *LinuxFactory) StartInitialization() (err error) {
 	// specific env vars.
 	os.Clearenv()
 
+	// 通过pipe发送init的error
+	// 因为成功的init后, 进程不会返回, 所以执行了defer后一定是出错了, 因此不用判断error
 	defer func() {
 		// We have an error during the initialization of the container's init,
 		// send it back to the parent process in the form of an initError.
@@ -360,11 +366,13 @@ func (l *LinuxFactory) StartInitialization() (err error) {
 		}
 	}()
 
+	// 构造init process的结构initer
 	i, err := newContainerInit(it, pipe, consoleSocket, fifofd)
 	if err != nil {
 		return err
 	}
 
+	// 执行initer.Init, 注意, 因为执行进程的exec, 所以成功情况下这个函数不会返回
 	// If Init succeeds, syscall.Exec will not return, hence none of the defers will be called.
 	return i.Init()
 }
