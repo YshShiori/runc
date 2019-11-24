@@ -177,17 +177,21 @@ func (c *linuxContainer) Stats() (*Stats, error) {
 		err   error
 		stats = &Stats{}
 	)
+	// cgroup的stat信息
 	if stats.CgroupStats, err = c.cgroupManager.GetStats(); err != nil {
 		return stats, newSystemErrorWithCause(err, "getting container stats from cgroups")
 	}
+	// intel rdt的stat信息
 	if c.intelRdtManager != nil {
 		if stats.IntelRdtStats, err = c.intelRdtManager.GetStats(); err != nil {
 			return stats, newSystemErrorWithCause(err, "getting container's Intel RDT stats")
 		}
 	}
+	// 网络信息
 	for _, iface := range c.config.Networks {
 		switch iface.Type {
 		case "veth":
+			// 就是读取对应的一些文件
 			istats, err := getNetworkInterfaceStats(iface.HostInterfaceName)
 			if err != nil {
 				return stats, newSystemErrorWithCausef(err, "getting network stats for interface %q", iface.HostInterfaceName)
@@ -201,6 +205,7 @@ func (c *linuxContainer) Stats() (*Stats, error) {
 func (c *linuxContainer) Set(config configs.Config) error {
 	c.m.Lock()
 	defer c.m.Unlock()
+	// 不允许在stopped状态调用
 	status, err := c.currentStatus()
 	if err != nil {
 		return err
@@ -208,6 +213,7 @@ func (c *linuxContainer) Set(config configs.Config) error {
 	if status == Stopped {
 		return newGenericError(fmt.Errorf("container not running"), ContainerNotRunning)
 	}
+	// cgroup相关设置改变
 	if err := c.cgroupManager.Set(&config); err != nil {
 		// Set configs back
 		if err2 := c.cgroupManager.Set(c.config); err2 != nil {
@@ -215,6 +221,7 @@ func (c *linuxContainer) Set(config configs.Config) error {
 		}
 		return err
 	}
+	// interl rdt相关配置改变
 	if c.intelRdtManager != nil {
 		if err := c.intelRdtManager.Set(&config); err != nil {
 			// Set configs back
@@ -224,6 +231,7 @@ func (c *linuxContainer) Set(config configs.Config) error {
 			return err
 		}
 	}
+	// 记录config
 	// After config setting succeed, update config and states
 	c.config = &config
 	_, err = c.updateState(nil)
@@ -1768,17 +1776,21 @@ func (c *linuxContainer) currentStatus() (Status, error) {
 // out of process we need to verify the container's status based on runtime
 // information and not rely on our in process info.
 func (c *linuxContainer) refreshState() error {
+	// 判断容器是否是暂停状态
 	paused, err := c.isPaused()
 	if err != nil {
 		return err
 	}
+	// 如果是暂停状态, 将state转变到pausedState
 	if paused {
 		return c.state.transition(&pausedState{c: c})
 	}
+	// 判断容器状态
 	t, err := c.runType()
 	if err != nil {
 		return err
 	}
+	// 执行state的转变
 	switch t {
 	case Created:
 		return c.state.transition(&createdState{c: c})
@@ -1789,31 +1801,40 @@ func (c *linuxContainer) refreshState() error {
 }
 
 func (c *linuxContainer) runType() (Status, error) {
+	// init process都没有, 那么就是stop状态
 	if c.initProcess == nil {
 		return Stopped, nil
 	}
+	// 看init process对应的pid是否存在, 不存在也是stop状态
 	pid := c.initProcess.pid()
 	stat, err := system.Stat(pid)
 	if err != nil {
 		return Stopped, nil
 	}
+	// pid对应process的stat对不上, 可能是新的进程、僵尸进程、dead进程, 那么都是stop状态
 	if stat.StartTime != c.initProcessStartTime || stat.State == system.Zombie || stat.State == system.Dead {
 		return Stopped, nil
 	}
+	// 判断只在created使用的exec.fifo是否存在, 如果存在那么就是created状态
 	// We'll create exec fifo and blocking on it after container is created,
 	// and delete it after start container.
 	if _, err := os.Stat(filepath.Join(c.root, execFifoFilename)); err == nil {
 		return Created, nil
 	}
+	// 最后只有Running状态
 	return Running, nil
 }
 
 func (c *linuxContainer) isPaused() (bool, error) {
+	// 得到freezer的cgroup目录
 	fcg := c.cgroupManager.GetPaths()["freezer"]
 	if fcg == "" {
 		// A container doesn't have a freezer cgroup
 		return false, nil
 	}
+
+	// 决定freeze的文件名字
+	// cgroup v1下是freezer.state v2是cgroup.freeze
 	pausedState := "FROZEN"
 	filename := "freezer.state"
 	if cgroups.IsCgroup2UnifiedMode() {
@@ -1821,6 +1842,7 @@ func (c *linuxContainer) isPaused() (bool, error) {
 		pausedState = "1"
 	}
 
+	// 读取cgroup freezer对应的状态文件
 	data, err := ioutil.ReadFile(filepath.Join(fcg, filename))
 	if err != nil {
 		// If freezer cgroup is not mounted, the container would just be not paused.
@@ -1829,6 +1851,7 @@ func (c *linuxContainer) isPaused() (bool, error) {
 		}
 		return false, newSystemErrorWithCause(err, "checking if container is paused")
 	}
+	// 判断是否是paused状态
 	return bytes.Equal(bytes.TrimSpace(data), []byte(pausedState)), nil
 }
 
@@ -1838,15 +1861,18 @@ func (c *linuxContainer) currentState() (*State, error) {
 		externalDescriptors []string
 		pid                 = -1
 	)
+	// 得到init进程的pid, startTime, 即额外信息
 	if c.initProcess != nil {
 		pid = c.initProcess.pid()
 		startTime, _ = c.initProcess.startTime()
 		externalDescriptors = c.initProcess.externalDescriptors()
 	}
+	// 得到intel Rdt的路径
 	intelRdtPath, err := intelrdt.GetIntelRdtPath(c.ID())
 	if err != nil {
 		intelRdtPath = ""
 	}
+	// 组装State结构
 	state := &State{
 		BaseState: BaseState{
 			ID:                   c.ID(),
@@ -1862,6 +1888,7 @@ func (c *linuxContainer) currentState() (*State, error) {
 		ExternalDescriptors: externalDescriptors,
 	}
 	if pid > 0 {
+		// 得到pid对应的namespace
 		for _, ns := range c.config.Namespaces {
 			state.NamespacePaths[ns.Type] = ns.GetPath(pid)
 		}
