@@ -283,8 +283,11 @@ type runner struct {
 	logLevel        string
 }
 
+// run 启动一个容器内容process
 func (r *runner) run(config *specs.Process) (int, error) {
 	var err error
+
+	// 错误回滚调用destory
 	defer func() {
 		if err != nil {
 			r.destroy()
