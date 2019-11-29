@@ -241,11 +241,14 @@ func (c *linuxContainer) Set(config configs.Config) error {
 func (c *linuxContainer) Start(process *Process) error {
 	c.m.Lock()
 	defer c.m.Unlock()
+	// 是init process
 	if process.Init {
+		// 创建exec fifo文件
 		if err := c.createExecFifo(); err != nil {
 			return err
 		}
 	}
+	// 启动进程
 	if err := c.start(process); err != nil {
 		if process.Init {
 			c.deleteExecFifo()
@@ -341,11 +344,13 @@ type openResult struct {
 }
 
 func (c *linuxContainer) start(process *Process) error {
+	// 创建parent process
 	parent, err := c.newParentProcess(process)
 	if err != nil {
 		return newSystemErrorWithCause(err, "creating new parent process")
 	}
 	parent.forwardChildLogs()
+	// 调用ParentProcess.start启动parent process
 	if err := parent.start(); err != nil {
 		// terminate the process to ensure that it properly is reaped.
 		if err := ignoreTerminateErrors(parent.terminate()); err != nil {
@@ -353,12 +358,15 @@ func (c *linuxContainer) start(process *Process) error {
 		}
 		return newSystemErrorWithCause(err, "starting container process")
 	}
+	// 进程启动, 赋值created
 	// generate a timestamp indicating when the container was started
 	c.created = time.Now().UTC()
 	if process.Init {
+		// state为created
 		c.state = &createdState{
 			c: c,
 		}
+		// 更新init process的start time
 		state, err := c.updateState(parent)
 		if err != nil {
 			return err
@@ -411,16 +419,19 @@ func (c *linuxContainer) createExecFifo() error {
 		return err
 	}
 
+	// 建立exec fifo文件, 路径为:<root>/exec.fifo
 	fifoName := filepath.Join(c.root, execFifoFilename)
 	if _, err := os.Stat(fifoName); err == nil {
 		return fmt.Errorf("exec fifo %s already exists", fifoName)
 	}
-	oldMask := unix.Umask(0000)
+	oldMask := unix.Umask(0000) // 默认权限为777
 	if err := unix.Mkfifo(fifoName, 0622); err != nil {
-		unix.Umask(oldMask)
+		unix.Umask(oldMask) // 变为老的权限
 		return err
 	}
 	unix.Umask(oldMask)
+
+	// 改变own后返回
 	return os.Chown(fifoName, rootuid, rootgid)
 }
 
@@ -447,23 +458,30 @@ func (c *linuxContainer) includeExecFifo(cmd *exec.Cmd) error {
 }
 
 func (c *linuxContainer) newParentProcess(p *Process) (parentProcess, error) {
+	// 一个socket pair
+	// 用于信息传输
 	parentInitPipe, childInitPipe, err := utils.NewSockPair("init")
 	if err != nil {
 		return nil, newSystemErrorWithCause(err, "creating new init pipe")
 	}
 	messageSockPair := filePair{parentInitPipe, childInitPipe}
 
+	// 一个pipe
+	// 用于log信息传输
 	parentLogPipe, childLogPipe, err := os.Pipe()
 	if err != nil {
 		return nil, fmt.Errorf("Unable to create the log pipe:  %s", err)
 	}
 	logFilePair := filePair{parentLogPipe, childLogPipe}
 
+	// 按照init cmd得到exec.cmd对象
+	// 可以看到传入的都是child socket与child pipe
 	cmd, err := c.commandTemplate(p, childInitPipe, childLogPipe)
 	if err != nil {
 		return nil, newSystemErrorWithCause(err, "creating new command template")
 	}
 	if !p.Init {
+		// 不是init process, 创建一个exec process结构
 		return c.newSetnsProcess(p, cmd, messageSockPair, logFilePair)
 	}
 
@@ -475,20 +493,30 @@ func (c *linuxContainer) newParentProcess(p *Process) (parentProcess, error) {
 	if err := c.includeExecFifo(cmd); err != nil {
 		return nil, newSystemErrorWithCause(err, "including execfifo in cmd.Exec setup")
 	}
+	// 创建一个init process结构
 	return c.newInitProcess(p, cmd, messageSockPair, logFilePair)
 }
 
 func (c *linuxContainer) commandTemplate(p *Process, childInitPipe *os.File, childLogPipe *os.File) (*exec.Cmd, error) {
+	// cmd的命令为initPath，initPath默认为当前进程的命令, 即runc init
+	// cmd的args还是拷贝的传递的参数
 	cmd := exec.Command(c.initPath, c.initArgs[1:]...)
+	// 这里改变了cmd执行的命令, 为initArgs[0], 但是默认应该还是runc init
 	cmd.Args[0] = c.initArgs[0]
+
+	// 设置标准输出输出为process指定
 	cmd.Stdin = p.Stdin
 	cmd.Stdout = p.Stdout
 	cmd.Stderr = p.Stderr
+
+	// 设置工作目录为Rootfs
 	cmd.Dir = c.config.Rootfs
 	if cmd.SysProcAttr == nil {
 		cmd.SysProcAttr = &syscall.SysProcAttr{}
 	}
+	// 环境变量的传递
 	cmd.Env = append(cmd.Env, fmt.Sprintf("GOMAXPROCS=%s", os.Getenv("GOMAXPROCS")))
+	// fd的传递
 	cmd.ExtraFiles = append(cmd.ExtraFiles, p.ExtraFiles...)
 	if p.ConsoleSocket != nil {
 		cmd.ExtraFiles = append(cmd.ExtraFiles, p.ConsoleSocket)
@@ -496,13 +524,13 @@ func (c *linuxContainer) commandTemplate(p *Process, childInitPipe *os.File, chi
 			fmt.Sprintf("_LIBCONTAINER_CONSOLE=%d", stdioFdCount+len(cmd.ExtraFiles)-1),
 		)
 	}
-	cmd.ExtraFiles = append(cmd.ExtraFiles, childInitPipe)
+	cmd.ExtraFiles = append(cmd.ExtraFiles, childInitPipe) // 这里把socket fd传递
 	cmd.Env = append(cmd.Env,
 		fmt.Sprintf("_LIBCONTAINER_INITPIPE=%d", stdioFdCount+len(cmd.ExtraFiles)-1),
 		fmt.Sprintf("_LIBCONTAINER_STATEDIR=%s", c.root),
 	)
 
-	cmd.ExtraFiles = append(cmd.ExtraFiles, childLogPipe)
+	cmd.ExtraFiles = append(cmd.ExtraFiles, childLogPipe) // 这里把pipe fd传递
 	cmd.Env = append(cmd.Env,
 		fmt.Sprintf("_LIBCONTAINER_LOGPIPE=%d", stdioFdCount+len(cmd.ExtraFiles)-1),
 		fmt.Sprintf("_LIBCONTAINER_LOGLEVEL=%s", p.LogLevel),
@@ -519,6 +547,8 @@ func (c *linuxContainer) commandTemplate(p *Process, childInitPipe *os.File, chi
 
 func (c *linuxContainer) newInitProcess(p *Process, cmd *exec.Cmd, messageSockPair, logFilePair filePair) (*initProcess, error) {
 	cmd.Env = append(cmd.Env, "_LIBCONTAINER_INITTYPE="+string(initStandard))
+
+	// 查看有没有指定各个namespace
 	nsMaps := make(map[configs.NamespaceType]string)
 	for _, ns := range c.config.Namespaces {
 		if ns.Path != "" {
@@ -526,10 +556,13 @@ func (c *linuxContainer) newInitProcess(p *Process, cmd *exec.Cmd, messageSockPa
 		}
 	}
 	_, sharePidns := nsMaps[configs.NEWPID]
+	// 构造需要发送的bootstrap 程序的netlink msg
 	data, err := c.bootstrapData(c.config.Namespaces.CloneFlags(), nsMaps)
 	if err != nil {
 		return nil, err
 	}
+	// 构造init进程
+	// 可以看到, 启动相关的所有东西都给到的init Process
 	init := &initProcess{
 		cmd:             cmd,
 		messageSockPair: messageSockPair,
@@ -542,6 +575,7 @@ func (c *linuxContainer) newInitProcess(p *Process, cmd *exec.Cmd, messageSockPa
 		bootstrapData:   data,
 		sharePidns:      sharePidns,
 	}
+	// 赋值到init Process
 	c.initProcess = init
 	return init, nil
 }
@@ -1976,6 +2010,8 @@ func encodeIDMapping(idMap []configs.IDMap) ([]byte, error) {
 // such as one that uses nsenter package to bootstrap the container's
 // init process correctly, i.e. with correct namespaces, uid/gid
 // mapping etc.
+// bootstrapData 是通过netlink发送到容器的bootstrap进程??
+// 其netlink的proto都是自己定义的, 不是内核使用的netlink
 func (c *linuxContainer) bootstrapData(cloneFlags uintptr, nsMaps map[configs.NamespaceType]string) (io.Reader, error) {
 	// create the netlink message
 	r := nl.NewNetlinkRequest(int(InitMsg), 0)
@@ -1988,6 +2024,7 @@ func (c *linuxContainer) bootstrapData(cloneFlags uintptr, nsMaps map[configs.Na
 
 	// write custom namespace paths
 	if len(nsMaps) > 0 {
+		// 指定的namespace path加入到message中
 		nsPaths, err := c.orderNamespacePaths(nsMaps)
 		if err != nil {
 			return nil, err

@@ -282,8 +282,8 @@ func (l *LinuxFactory) Load(id string) (Container, error) {
 		created:              state.Created,
 	}
 	// 加载state
-	// 一开始是loadedState(非正常流的state), 不过refreshState会刷新到正常的state
 	c.state = &loadedState{c: c}
+	// 一开始是loadedState(非正常流的state), 不过refreshState会刷新到正常的state
 	if err := c.refreshState(); err != nil {
 		return nil, err
 	}
