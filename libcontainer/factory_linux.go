@@ -300,7 +300,8 @@ func (l *LinuxFactory) Type() string {
 
 // StartInitialization loads a container by opening the pipe fd from the parent to read the configuration and state
 // This is a low level implementation detail of the reexec and should not be consumed externally
-// 以下行为应该是在容器内执行的, 即执行runc init后流程到了容器内部
+//
+// runc init调用的是StartInitialization, 以下行为应该是在容器内执行的
 func (l *LinuxFactory) StartInitialization() (err error) {
 	var (
 		pipefd, fifofd int

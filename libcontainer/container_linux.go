@@ -238,6 +238,11 @@ func (c *linuxContainer) Set(config configs.Config) error {
 	return err
 }
 
+// Start 创建并启动container的init命令的进程
+//
+// 执行的命令由Factory指定, 而不是process的, 默认为runc init
+// 然后runc init会进行容器内的初始化
+// runc create最后调用的就是Start接口
 func (c *linuxContainer) Start(process *Process) error {
 	c.m.Lock()
 	defer c.m.Unlock()
@@ -258,16 +263,25 @@ func (c *linuxContainer) Start(process *Process) error {
 	return nil
 }
 
+// Run 创建并启动一个容器, 是Start+Exec
+//
+// runc run调用的就是Run接口
 func (c *linuxContainer) Run(process *Process) error {
+	// 启动process
 	if err := c.Start(process); err != nil {
 		return err
 	}
+	// 如果是init process, 等待到exec fifo文件传回数据后, 删除exec fifo
+	// 文件并退出, 即等待进程运行起来
 	if process.Init {
 		return c.exec()
 	}
 	return nil
 }
 
+// Exec 执行容器真正启动运行的命令
+//
+// runc start最后调用的就是Exec函数
 func (c *linuxContainer) Exec() error {
 	c.m.Lock()
 	defer c.m.Unlock()
@@ -275,13 +289,17 @@ func (c *linuxContainer) Exec() error {
 }
 
 func (c *linuxContainer) exec() error {
+	// 构建exec fifo文件路径
 	path := filepath.Join(c.root, execFifoFilename)
 
 	fifoOpen := make(chan struct{})
 	select {
+	// case: 进程退出
 	case <-awaitProcessExit(c.initProcess.pid(), fifoOpen):
 		return errors.New("container process is already dead")
+	// case: 打开exec fifo文件成功
 	case result := <-awaitFifoOpen(path):
+		// 读取exec fifo文件的所有数据后, 删除exec fifo
 		close(fifoOpen)
 		if result.err != nil {
 			return result.err
@@ -391,6 +409,10 @@ func (c *linuxContainer) start(process *Process) error {
 	return nil
 }
 
+// Signal 向容器init process发送信号
+//
+// runc kill会调用Signal接口
+// runc delete会调用Signal发送SIGINT信号
 func (c *linuxContainer) Signal(s os.Signal, all bool) error {
 	if all {
 		return signalAllProcesses(c.cgroupManager, s)
@@ -641,24 +663,35 @@ func (c *linuxContainer) newInitConfig(process *Process) *initConfig {
 	return cfg
 }
 
+// Destory 删除容器相关信息
+//
+// runc delete最后调用Destroy
 func (c *linuxContainer) Destroy() error {
 	c.m.Lock()
 	defer c.m.Unlock()
 	return c.state.destroy()
 }
 
+// Pause 暂停一个容器
+//
+// Pause通过cgroup freezer实现
+// runc pause最后调用Pause
 func (c *linuxContainer) Pause() error {
 	c.m.Lock()
 	defer c.m.Unlock()
+	// 得到container当前状态
 	status, err := c.currentStatus()
 	if err != nil {
 		return err
 	}
+	// 只有Running与created的状态可以pause
 	switch status {
 	case Running, Created:
+		// 调用cgroupManager去cgroup.freezer进行进程的暂停
 		if err := c.cgroupManager.Freeze(configs.Frozen); err != nil {
 			return err
 		}
+		// 改变为pause状态
 		return c.state.transition(&pausedState{
 			c: c,
 		})
@@ -666,9 +699,13 @@ func (c *linuxContainer) Pause() error {
 	return newGenericError(fmt.Errorf("container not running or created: %s", status), ContainerNotRunning)
 }
 
+// Resume 恢复一个paused的容器
+//
+// runc resume最后调用的就是Resume
 func (c *linuxContainer) Resume() error {
 	c.m.Lock()
 	defer c.m.Unlock()
+	// 确保状态是paused
 	status, err := c.currentStatus()
 	if err != nil {
 		return err
@@ -676,14 +713,19 @@ func (c *linuxContainer) Resume() error {
 	if status != Paused {
 		return newGenericError(fmt.Errorf("container not paused"), ContainerNotPaused)
 	}
+	// 使用cgroupMangaer打开freezer状态
 	if err := c.cgroupManager.Freeze(configs.Thawed); err != nil {
 		return err
 	}
+	// 转换状态
 	return c.state.transition(&runningState{
 		c: c,
 	})
 }
 
+// NotifyOOM 返回一个监听oom事件的chan
+//
+// runc events调用NotifyOOM来监听OOM事件
 func (c *linuxContainer) NotifyOOM() (<-chan struct{}, error) {
 	// XXX(cyphar): This requires cgroups.
 	if c.config.RootlessCgroups {
@@ -692,6 +734,9 @@ func (c *linuxContainer) NotifyOOM() (<-chan struct{}, error) {
 	return notifyOnOOM(c.cgroupManager.GetPaths())
 }
 
+// NotifyMemoryPressure 返回一个监听mem warn通知的chan
+//
+// 目前runc接口使用
 func (c *linuxContainer) NotifyMemoryPressure(level PressureLevel) (<-chan struct{}, error) {
 	// XXX(cyphar): This requires cgroups.
 	if c.config.RootlessCgroups {
@@ -961,6 +1006,9 @@ func (c *linuxContainer) handleCriuConfigurationFile(rpcOpts *criurpc.CriuOpts) 
 	}
 }
 
+// Checkpoint 为一个运行中的容器记录checkpoint, 使用criu技术
+//
+// runc checkpoint最后调用Checkpoint
 func (c *linuxContainer) Checkpoint(criuOpts *CriuOpts) error {
 	c.m.Lock()
 	defer c.m.Unlock()
@@ -1268,6 +1316,9 @@ func (c *linuxContainer) prepareCriuRestoreMounts(mounts []*configs.Mount) error
 	return nil
 }
 
+// Restore 按照一个checkpoint回复一个容器
+//
+// runc restore最后调用Restore
 func (c *linuxContainer) Restore(process *Process, criuOpts *CriuOpts) error {
 	c.m.Lock()
 	defer c.m.Unlock()
