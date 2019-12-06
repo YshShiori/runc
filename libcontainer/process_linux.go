@@ -244,6 +244,7 @@ func (p *initProcess) externalDescriptors() []string {
 // getChildPid receives the final child's pid over the provided pipe.
 func (p *initProcess) getChildPid() (int, error) {
 	var pid pid
+	// 从child接受pid的数据
 	if err := json.NewDecoder(p.messageSockPair.parent).Decode(&pid); err != nil {
 		p.cmd.Wait()
 		return -1, err
@@ -260,6 +261,7 @@ func (p *initProcess) getChildPid() (int, error) {
 }
 
 func (p *initProcess) waitForChildExit(childPid int) error {
+	// cmd对应的是nsenter的parent进程, 这里是等待parent进程退出
 	status, err := p.cmd.Process.Wait()
 	if err != nil {
 		p.cmd.Wait()
@@ -270,6 +272,7 @@ func (p *initProcess) waitForChildExit(childPid int) error {
 		return &exec.ExitError{ProcessState: status}
 	}
 
+	// 记录最后活下来的init进程
 	process, err := os.FindProcess(childPid)
 	if err != nil {
 		return err
@@ -280,9 +283,17 @@ func (p *initProcess) waitForChildExit(childPid int) error {
 }
 
 func (p *initProcess) start() error {
+	// parent 是当前进程使用的, child是启动的cmd使用的
+
+	// 结束关闭parent的msg socket
 	defer p.messageSockPair.parent.Close()
+
+	// 执行cmd的启动(detach模式的), 这里就是执行了runc init
+	// 相关cmd是在构造Container时就指定好了
 	err := p.cmd.Start()
 	p.process.ops = p
+
+	// 关闭child的msg与log socket, 因为当前进程不会使用到
 	// close the write-side of the pipes (controlled by child)
 	p.messageSockPair.child.Close()
 	p.logFilePair.child.Close()
@@ -290,17 +301,24 @@ func (p *initProcess) start() error {
 		p.process.ops = nil
 		return newSystemErrorWithCause(err, "starting init process command")
 	}
+
+	// 配置所有cgroup, 所有cgroup的配置都已经存在cgroupManager中
+	//
+	// 在执行runc init后就配置cgroup, 使得runc init的所有子进程都可以继承cgroup配置
+	// 防止children escape the cgroup.
 	// Do this before syncing with child so that no children can escape the
 	// cgroup. We don't need to worry about not doing this and not being root
 	// because we'd be using the rootless cgroup manager in that case.
 	if err := p.manager.Apply(p.pid()); err != nil {
 		return newSystemErrorWithCause(err, "applying cgroup configuration for process")
 	}
+	// intel Rdt的配置
 	if p.intelRdtManager != nil {
 		if err := p.intelRdtManager.Apply(p.pid()); err != nil {
 			return newSystemErrorWithCause(err, "applying Intel RDT configuration for process")
 		}
 	}
+	// 回滚操作, 销毁cgroup与intel Rdt
 	defer func() {
 		if err != nil {
 			// TODO: should not be the responsibility to call here
@@ -311,14 +329,20 @@ func (p *initProcess) start() error {
 		}
 	}()
 
+	// 向parent发送bootstrapData, 即指定的namespace的netlink req(只是用了netlink的协议, 还是通过pipe发送消息的)
+	// 这样messageSockPair.child中就会收到该数据
+	// cmd进程是在runc init执行前读取的, 通过"nsenter”这个包的导入来读取的(这样是为了在runtime启动之前就设置namespace)
 	if _, err := io.Copy(p.messageSockPair.parent, p.bootstrapData); err != nil {
 		return newSystemErrorWithCause(err, "copying bootstrap data to pipe")
 	}
+	// runc init启动之前的有3个进程:parent、child、init
+	// 这里的childPid就是读取init进程的pid
 	childPid, err := p.getChildPid()
 	if err != nil {
 		return newSystemErrorWithCause(err, "getting the final child's pid from pipe")
 	}
 
+	// 读取init进程的所有fd, 设置到process.fds中
 	// Save the standard descriptor names before the container process
 	// can potentially move them (e.g., via dup2()).  If we don't do this now,
 	// we won't know at checkpoint time which file descriptor to look up.
@@ -327,6 +351,7 @@ func (p *initProcess) start() error {
 		return newSystemErrorWithCausef(err, "getting pipe fds for pid %d", childPid)
 	}
 	p.setExternalDescriptors(fds)
+
 	// Do this before syncing with child so that no children
 	// can escape the cgroup
 	if err := p.manager.Apply(childPid); err != nil {
@@ -337,6 +362,8 @@ func (p *initProcess) start() error {
 			return newSystemErrorWithCause(err, "applying Intel RDT configuration for process")
 		}
 	}
+
+	// 如果指定了cgroup namespace, 那么通过socket pair发送创建cgroup namespace的消息
 	// Now it's time to setup cgroup namesapce
 	if p.config.Config.Namespaces.Contains(configs.NEWCGROUP) && p.config.Config.Namespaces.PathOf(configs.NEWCGROUP) == "" {
 		if _, err := p.messageSockPair.parent.Write([]byte{createCgroupns}); err != nil {
@@ -344,6 +371,7 @@ func (p *initProcess) start() error {
 		}
 	}
 
+	// 等待nsenter的parent进程的退出, 记录真正的init进程的Process
 	// Wait for our first child to exit
 	if err := p.waitForChildExit(childPid); err != nil {
 		return newSystemErrorWithCause(err, "waiting for our first child to exit")
@@ -358,9 +386,12 @@ func (p *initProcess) start() error {
 			}
 		}
 	}()
+
+	// 创建network interfaces
 	if err := p.createNetworkInterfaces(); err != nil {
 		return newSystemErrorWithCause(err, "creating network interfaces")
 	}
+	// 通过socket pair发送config
 	if err := p.sendConfig(); err != nil {
 		return newSystemErrorWithCause(err, "sending config to init process")
 	}
@@ -369,8 +400,10 @@ func (p *initProcess) start() error {
 		sentResume bool
 	)
 
+	// 与init进程进行初始化的同步, 主要是做一些hook的操作
 	ierr := parseSync(p.messageSockPair.parent, func(sync *syncT) error {
 		switch sync.Type {
+		// 进程ready
 		case procReady:
 			// set rlimits, this has to be done here because we lose permissions
 			// to raise the limits once we enter a user-namespace
@@ -379,6 +412,7 @@ func (p *initProcess) start() error {
 			}
 			// call prestart hooks
 			if !p.config.Config.Namespaces.Contains(configs.NEWNS) {
+				// 设置
 				// Setup cgroup before prestart hook, so that the prestart hook could apply cgroup permissions.
 				if err := p.manager.Set(p.config.Config); err != nil {
 					return newSystemErrorWithCause(err, "setting cgroup config for ready process")
@@ -404,6 +438,7 @@ func (p *initProcess) start() error {
 					}
 				}
 			}
+			// 回复, 可以执行process
 			// Sync with child.
 			if err := writeSync(p.messageSockPair.parent, procRun); err != nil {
 				return newSystemErrorWithCause(err, "writing syncT 'run'")
@@ -445,6 +480,7 @@ func (p *initProcess) start() error {
 		return nil
 	})
 
+	// 同步结果处理
 	if !sentRun {
 		return newSystemErrorWithCause(ierr, "container init")
 	}
@@ -531,6 +567,7 @@ func (p *initProcess) forwardChildLogs() {
 	go logs.ForwardLogs(p.logFilePair.parent)
 }
 
+// getPipeFds 读取pid下所有fd的名字
 func getPipeFds(pid int) ([]string, error) {
 	fds := make([]string, 3)
 

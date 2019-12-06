@@ -306,9 +306,12 @@ func (l *LinuxFactory) StartInitialization() (err error) {
 	var (
 		pipefd, fifofd int
 		consoleSocket  *os.File
-		envInitPipe    = os.Getenv("_LIBCONTAINER_INITPIPE")
-		envFifoFd      = os.Getenv("_LIBCONTAINER_FIFOFD")
-		envConsole     = os.Getenv("_LIBCONTAINER_CONSOLE")
+		// envInitPipe 就是Factory创建Container时创建的socket pair的fd
+		envInitPipe = os.Getenv("_LIBCONTAINER_INITPIPE")
+		// envFifoFd 就是放在runc下的exec.fifo文件的fd
+		envFifoFd = os.Getenv("_LIBCONTAINER_FIFOFD")
+		// envConsole 如果需要console, 那么这个就是调用runc create创建的console的fd
+		envConsole = os.Getenv("_LIBCONTAINER_CONSOLE")
 	)
 
 	// 得好通过环境变量传入的pipe的fd

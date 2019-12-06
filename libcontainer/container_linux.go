@@ -306,6 +306,10 @@ func (c *linuxContainer) exec() error {
 		}
 		f := result.file
 		defer f.Close()
+		// 这里就代表这让容器内的init进程继续执行
+		// 因为fifo是无缓冲队列, 容器内的第一个进程(runc init)执行后, 准备
+		// 好所有执行环境后, 会向fifo发送消息并阻塞, 这里读取fifo的数据就会让
+		// init进程继续执行, 即执行exec系统调用, 调用容器指定的cmd
 		if err := readFromExecFifo(f); err != nil {
 			return err
 		}
@@ -548,7 +552,7 @@ func (c *linuxContainer) commandTemplate(p *Process, childInitPipe *os.File, chi
 	}
 	cmd.ExtraFiles = append(cmd.ExtraFiles, childInitPipe) // 这里把socket fd传递
 	cmd.Env = append(cmd.Env,
-		fmt.Sprintf("_LIBCONTAINER_INITPIPE=%d", stdioFdCount+len(cmd.ExtraFiles)-1),
+		fmt.Sprintf("_LIBCONTAINER_INITPIPE=%d", stdioFdCount+len(cmd.ExtraFiles)-1), //最后一个fd就是childInitPipe
 		fmt.Sprintf("_LIBCONTAINER_STATEDIR=%s", c.root),
 	)
 
@@ -2061,8 +2065,7 @@ func encodeIDMapping(idMap []configs.IDMap) ([]byte, error) {
 // such as one that uses nsenter package to bootstrap the container's
 // init process correctly, i.e. with correct namespaces, uid/gid
 // mapping etc.
-// bootstrapData 是通过netlink发送到容器的bootstrap进程??
-// 其netlink的proto都是自己定义的, 不是内核使用的netlink
+// bootstrapData 是netlink的协议数据, 会通过pipe发送到nsenter的进程中
 func (c *linuxContainer) bootstrapData(cloneFlags uintptr, nsMaps map[configs.NamespaceType]string) (io.Reader, error) {
 	// create the netlink message
 	r := nl.NewNetlinkRequest(int(InitMsg), 0)
