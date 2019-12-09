@@ -606,7 +606,8 @@ func (c *linuxContainer) newInitProcess(p *Process, cmd *exec.Cmd, messageSockPa
 	return init, nil
 }
 
-func (c *linuxContainer) newSetnsProcess(p *Process, cmd *exec.Cmd, messageSockPair, logFilePair filePair) (*setnsProcess, error) {
+func (c *linuxContainer) newSetnsProcess(p *Process, cmd *exec.Cmd, messageSockPair,
+	logFilePair filePair) (*setnsProcess, error) {
 	cmd.Env = append(cmd.Env, "_LIBCONTAINER_INITTYPE="+string(initSetns))
 	state, err := c.currentState()
 	if err != nil {

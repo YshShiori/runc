@@ -97,9 +97,11 @@ func (p *setnsProcess) start() (err error) {
 			return newSystemErrorWithCause(err, "copying bootstrap data to pipe")
 		}
 	}
+	// 差别之一：发送的bootstrap是让child进程setns，而不是创建namespace
 	if err = p.execSetns(); err != nil {
 		return newSystemErrorWithCause(err, "executing setns process")
 	}
+	// 差别之一：cgroup是加入一个pid
 	if len(p.cgroupPaths) > 0 {
 		if err := cgroups.EnterPid(p.cgroupPaths, p.pid()); err != nil && !p.rootlessCgroups {
 			return newSystemErrorWithCausef(err, "adding pid %d to cgroups", p.pid())
@@ -342,7 +344,7 @@ func (p *initProcess) start() error {
 		return newSystemErrorWithCause(err, "getting the final child's pid from pipe")
 	}
 
-	// 读取init进程的所有fd, 设置到process.fds中
+	// 读取init进程的标准流fd, 设置到process.fds中
 	// Save the standard descriptor names before the container process
 	// can potentially move them (e.g., via dup2()).  If we don't do this now,
 	// we won't know at checkpoint time which file descriptor to look up.
