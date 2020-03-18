@@ -576,12 +576,14 @@ void nsexec(void)
 	int sync_child_pipe[2], sync_grandchild_pipe[2];
 	struct nlconfig_t config = { 0 };
 
+	// 设置发送log至父进程的 pipe
 	/*
 	 * Setup a pipe to send logs to the parent. This should happen
 	 * first, because bail will use that pipe.
 	 */
 	setup_logpipe();
 
+	// 读取父进程传递下来的pipe
 	/*
 	 * If we don't have an init pipe, just return to the go routine.
 	 * We'll only get an init pipe for start or exec.
@@ -600,6 +602,7 @@ void nsexec(void)
 
 	write_log(DEBUG, "nsexec started");
 
+	// 读取父进程通过pipe发送的配置(netlink协议)
 	/* Parse all of the netlink configuration. */
 	nl_parse(pipenum, &config);
 
@@ -626,10 +629,12 @@ void nsexec(void)
 			bail("failed to set process as non-dumpable");
 	}
 
+	// 创建接下来与子进程通信需要用到的socket pair
 	/* Pipe so we can tell the child when we've finished setting up. */
 	if (socketpair(AF_LOCAL, SOCK_STREAM, 0, sync_child_pipe) < 0)
 		bail("failed to setup sync pipe between parent and child");
 
+	// 创建接下来与子子进程通信需要用到的socket pair
 	/*
 	 * We need a new socketpair to sync with grandchild so we don't have
 	 * race condition with child.
@@ -639,9 +644,13 @@ void nsexec(void)
 
 	/* TODO: Currently we aren't dealing with child deaths properly. */
 
+	// 开始执行double fork, 即 
+	// 原因都在注释里
+	// 一个大型的switch case状态机
 	/*
 	 * Okay, so this is quite annoying.
 	 *
+	 * 先clone, 在clone, 
 	 * In order for this unsharing code to be more extensible we need to split
 	 * up unshare(CLONE_NEWUSER) and clone() in various ways. The ideal case
 	 * would be if we did clone(CLONE_NEWUSER) and the other namespaces
@@ -656,6 +665,7 @@ void nsexec(void)
 	 * However, if we unshare(2) the user namespace *before* we clone(2), then
 	 * all hell breaks loose.
 	 *
+	 * 先unshare(), 然后clone, 这样权限会丢失, 就不能设置 uid,gid mapping
 	 * The parent no longer has permissions to do many things (unshare(2) drops
 	 * all capabilities in your old namespace), and the container cannot be set
 	 * up to have more than one {uid,gid} mapping. This is obviously less than
@@ -695,6 +705,7 @@ void nsexec(void)
 		 *          process.
 		 */
 	case JUMP_PARENT:{
+			// 这里是我们在最开始的 parent进程
 			int len;
 			pid_t child, first_child = -1;
 			bool ready = false;
@@ -702,11 +713,13 @@ void nsexec(void)
 			/* For debugging. */
 			prctl(PR_SET_NAME, (unsigned long)"runc:[0:PARENT]", 0, 0, 0);
 
+			// clone child进程, 没有设置新的namespace, 子进程进入"JUMP_CHILD" case
 			/* Start the process of getting a container. */
 			child = clone_parent(&env, JUMP_CHILD);
 			if (child < 0)
 				bail("unable to fork: child_func");
 
+			// 与 child进程进行同步
 			/*
 			 * State machine for synchronisation with the children.
 			 *
@@ -717,14 +730,17 @@ void nsexec(void)
 			while (!ready) {
 				enum sync_t s;
 
+				// parent进程只使用socker_pair1, 0给child使用
 				syncfd = sync_child_pipe[1];
 				close(sync_child_pipe[0]);
 
+				// 读取同步事件
 				if (read(syncfd, &s, sizeof(s)) != sizeof(s))
 					bail("failed to sync with child: next state");
 
 				switch (s) {
 				case SYNC_USERMAP_PLS:
+					// 设置child进程的{uid,gid} mapping
 					/*
 					 * Enable setgroups(2) if we've been asked to. But we also
 					 * have to explicitly disable setgroups(2) if we're
@@ -750,8 +766,10 @@ void nsexec(void)
 					}
 					break;
 				case SYNC_RECVPID_PLS:{
+						// 到这里, child进程名为first_child, grandchild名为child
 						first_child = child;
 
+						// 读取grand child进程id
 						/* Get the init_func pid. */
 						if (read(syncfd, &child, sizeof(child)) != sizeof(child)) {
 							kill(first_child, SIGKILL);
@@ -780,6 +798,7 @@ void nsexec(void)
 					}
 					break;
 				case SYNC_CHILD_READY:
+					// child ready事件后, parent进程第一步完成, 退出循环
 					ready = true;
 					break;
 				default:
@@ -787,21 +806,26 @@ void nsexec(void)
 				}
 			}
 
+			// 当收到child进程的Ready事件后, parent进程第一步完成, 需要进行grandchild的sync
+			// grandchild 在SYNC_RECVPID_PLS事件前就已经创建
 			/* Now sync with grandchild. */
 
 			ready = false;
 			while (!ready) {
 				enum sync_t s;
 
+				// 使用socket pair1, 0留给grandchild
 				syncfd = sync_grandchild_pipe[1];
 				close(sync_grandchild_pipe[0]);
 
+				// 发送SYNC_GRANDCHILD事件, 表示grandchild可以开始sync
 				s = SYNC_GRANDCHILD;
 				if (write(syncfd, &s, sizeof(s)) != sizeof(s)) {
 					kill(child, SIGKILL);
 					bail("failed to sync with child: write(SYNC_GRANDCHILD)");
 				}
 
+				// 等待grandchild回复SYNC_CHILD_READY事件
 				if (read(syncfd, &s, sizeof(s)) != sizeof(s))
 					bail("failed to sync with child: next state");
 
@@ -829,6 +853,7 @@ void nsexec(void)
 			pid_t child;
 			enum sync_t s;
 
+			// 使用socket_pair0
 			/* We're in a child and thus need to tell the parent if we die. */
 			syncfd = sync_child_pipe[0];
 			close(sync_child_pipe[1]);
@@ -836,6 +861,7 @@ void nsexec(void)
 			/* For debugging. */
 			prctl(PR_SET_NAME, (unsigned long)"runc:[1:CHILD]", 0, 0, 0);
 
+			// 调用setns, 加入config配置的指定namespace
 			/*
 			 * We need to setns first. We cannot do this earlier (in stage 0)
 			 * because of the fact that we forked to get here (the PID of
@@ -845,6 +871,7 @@ void nsexec(void)
 			if (config.namespaces)
 				join_namespaces(config.namespaces);
 
+			// 优先unshare user namespace (config没有指定的情况下), 因为比较特殊
 			/*
 			 * Deal with user namespaces first. They are quite special, as they
 			 * affect our ability to unshare other namespaces and are used as
@@ -867,6 +894,7 @@ void nsexec(void)
 			if (config.cloneflags & CLONE_NEWUSER) {
 				if (unshare(CLONE_NEWUSER) < 0)
 					bail("failed to unshare user namespace");
+				// cloneflag 去除创建新的user namespace
 				config.cloneflags &= ~CLONE_NEWUSER;
 
 				/*
@@ -879,6 +907,8 @@ void nsexec(void)
 					if (prctl(PR_SET_DUMPABLE, 1, 0, 0, 0) < 0)
 						bail("failed to set process as dumpable");
 				}
+
+				// 配置完user namespace了, 向parent发送SYNC_USERMAP_PLS事件
 				s = SYNC_USERMAP_PLS;
 				if (write(syncfd, &s, sizeof(s)) != sizeof(s))
 					bail("failed to sync with parent: write(SYNC_USERMAP_PLS)");
@@ -899,6 +929,8 @@ void nsexec(void)
 				if (setresuid(0, 0, 0) < 0)
 					bail("failed to become root in user namespace");
 			}
+
+			// unshare 其他namespace, 除了cgroup namespace
 			/*
 			 * Unshare all of the namespaces. Now, it should be noted that this
 			 * ordering might break in the future (especially with rootless
@@ -912,6 +944,7 @@ void nsexec(void)
 			if (unshare(config.cloneflags & ~CLONE_NEWCGROUP) < 0)
 				bail("failed to unshare namespaces");
 
+			// clone grandchild进程, 进入JUMP_INIT
 			/*
 			 * TODO: What about non-namespace clone flags that we're dropping here?
 			 *
@@ -925,6 +958,7 @@ void nsexec(void)
 			if (child < 0)
 				bail("unable to fork: init_func");
 
+			// 向parent进程发送grandchild的进程id, 即SYNC_RECVPID_PLS事件
 			/* Send the child to our parent, which knows what it's doing. */
 			s = SYNC_RECVPID_PLS;
 			if (write(syncfd, &s, sizeof(s)) != sizeof(s)) {
@@ -947,6 +981,8 @@ void nsexec(void)
 				bail("failed to sync with parent: SYNC_RECVPID_ACK: got %u", s);
 			}
 
+
+			// child进程工作完成了, 发送SYNC_CHILD_READY事件 
 			s = SYNC_CHILD_READY;
 			if (write(syncfd, &s, sizeof(s)) != sizeof(s)) {
 				kill(child, SIGKILL);
@@ -964,12 +1000,14 @@ void nsexec(void)
 		 *          init_linux.go to run.
 		 */
 	case JUMP_INIT:{
+			// 位于grandchild的工作
 			/*
 			 * We're inside the child now, having jumped from the
 			 * start_child() code after forking in the parent.
 			 */
 			enum sync_t s;
 
+			// 老样子
 			/* We're in a child and thus need to tell the parent if we die. */
 			syncfd = sync_grandchild_pipe[0];
 			close(sync_grandchild_pipe[1]);
@@ -979,11 +1017,13 @@ void nsexec(void)
 			/* For debugging. */
 			prctl(PR_SET_NAME, (unsigned long)"runc:[2:INIT]", 0, 0, 0);
 
+			// 等待 parent 发送 SYNC_GRANDCHILD事件
 			if (read(syncfd, &s, sizeof(s)) != sizeof(s))
 				bail("failed to sync with parent: read(SYNC_GRANDCHILD)");
 			if (s != SYNC_GRANDCHILD)
 				bail("failed to sync with parent: SYNC_GRANDCHILD: got %u", s);
 
+			// sid, uid, gid, groups 一串设置
 			if (setsid() < 0)
 				bail("setsid failed");
 
@@ -998,6 +1038,7 @@ void nsexec(void)
 					bail("setgroups failed");
 			}
 
+			// 是否创建新的 cgroup namespace (需要 CREATECGROUPNS事件)
 			/* ... wait until our topmost parent has finished cgroup setup in p.manager.Apply() ... */
 			if (config.cloneflags & CLONE_NEWCGROUP) {
 				uint8_t value;
@@ -1010,6 +1051,7 @@ void nsexec(void)
 					bail("received unknown synchronisation value");
 			}
 
+			// grandchild 工作完成, 返回 SYNC_CHILD_READY事件
 			s = SYNC_CHILD_READY;
 			if (write(syncfd, &s, sizeof(s)) != sizeof(s))
 				bail("failed to sync with patent: write(SYNC_CHILD_READY)");
